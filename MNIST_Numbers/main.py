@@ -39,7 +39,7 @@ transform = transforms.Compose([
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = CheckImage()
-model.load_state_dict(torch.load('mnist_numbers.pth', map_location=device))
+model.load_state_dict(torch.load('MNIST_Numbers.pth', map_location=device))
 model.to(device)
 model.eval()
 
