@@ -1,5 +1,3 @@
-# MNIST_Numbers/main.py
-
 import streamlit as st
 import numpy as np
 import torch
@@ -16,24 +14,30 @@ BASE_DIR = Path(__file__).parent
 class MNISTModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.net = nn.Sequential(
+        self.first = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2)
+        )
+        self.second = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(28 * 28, 256),
+            nn.Linear(16 * 14 * 14, 64),
             nn.ReLU(),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 10),
+            nn.Dropout(0.25),
+            nn.Linear(64, 10)
         )
 
     def forward(self, x):
-        return self.net(x)
+        x = self.first(x)
+        x = self.second(x)
+        return x
 
 
 @st.cache_resource
 def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MNISTModel().to(device)
-    model.load_state_dict(torch.load(BASE_DIR / "model_MNIST.pth", map_location=device))
+    model.load_state_dict(torch.load(BASE_DIR / "model_CheckImage_MNIST_Numbers.pth", map_location=device, weights_only=True))
     model.eval()
     return model, device
 
@@ -103,7 +107,7 @@ def preprocess(canvas_image: np.ndarray) -> torch.Tensor:
 # ══════════════════════════════════════════════════════════════════════════════
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 import uvicorn
 import io
 
@@ -118,8 +122,18 @@ app = FastAPI(title="MNIST Digit Classifier", lifespan=lifespan)
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File is not an image")
+
     raw = await file.read()
-    img = Image.open(io.BytesIO(raw)).convert("RGBA")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGBA")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read image")
+
     x = preprocess(np.array(img)).to(app.state.device)
 
     with torch.no_grad():
