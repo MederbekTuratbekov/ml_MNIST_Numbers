@@ -1,150 +1,95 @@
-import streamlit as st
-import numpy as np
 import torch
+import uvicorn
 import torch.nn as nn
+import torch.nn.functional as F
 from pathlib import Path
-from PIL import Image, ImageOps
-from streamlit_drawable_canvas import st_canvas
-
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from pydantic import BaseModel, field_validator
+from torchtext.data import get_tokenizer
 
 BASE_DIR = Path(__file__).parent
+HIDDEN_DIM = 64
 
 
 # ── Model ──────────────────────────────────────────────────────────────────────
-class MNISTModel(nn.Module):
-    def __init__(self):
+class SentimentModel(nn.Module):
+    def __init__(self, vocab_size, embed_dim=64, hidden_dim=HIDDEN_DIM, output_dim=2, dropout=0.5):
         super().__init__()
-        self.first = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2)
-        )
-        self.second = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(16 * 14 * 14, 64),
-            nn.ReLU(),
-            nn.Dropout(0.25),
-            nn.Linear(64, 10)
-        )
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        x = self.first(x)
-        x = self.second(x)
-        return x
+        x = self.embedding(x)
+        _, (h_n, _) = self.lstm(x)
+        x = self.dropout(h_n[-1])
+        return self.fc(x)
 
 
-@st.cache_resource
-def load_model():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MNISTModel().to(device)
-    model.load_state_dict(torch.load(BASE_DIR / "model_CheckImage_MNIST_Numbers.pth", map_location=device, weights_only=True))
-    model.eval()
-    return model, device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+tokenizer = get_tokenizer("basic_english")
 
 
-# ── Preprocessing ──────────────────────────────────────────────────────────────
-def preprocess(canvas_image: np.ndarray) -> torch.Tensor:
-    img = Image.fromarray(canvas_image.astype("uint8")).convert("L")
-    img = ImageOps.invert(img)
-
-    arr = np.array(img)
-    coords = np.argwhere(arr > 20)
-    if coords.size > 0:
-        y0, x0 = coords.min(axis=0)
-        y1, x1 = coords.max(axis=0)
-        img = img.crop((x0, y0, x1 + 1, y1 + 1))
-
-    w, h = img.size
-    side = max(w, h)
-    padded = Image.new("L", (side, side), color=0)
-    padded.paste(img, ((side - w) // 2, (side - h) // 2))
-    padded = ImageOps.expand(padded, border=side // 5, fill=0)
-
-    resized = padded.resize((28, 28), Image.LANCZOS)
-    tensor = torch.tensor(np.array(resized), dtype=torch.float32) / 255.0
-    return tensor.unsqueeze(0).unsqueeze(0)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# STREAMLIT — закомментировано, раскомментируй этот блок и закомментируй FastAPI ниже
-# запуск: streamlit run main.py
-# ══════════════════════════════════════════════════════════════════════════════
-
-# st.title("Распознавание рукописных цифр")
-# st.write("Нарисуй цифру от 0 до 9")
-#
-# model, device = load_model()
-#
-# canvas_result = st_canvas(
-#     fill_color="black",
-#     stroke_width=18,
-#     stroke_color="black",
-#     background_color="white",
-#     width=280,
-#     height=280,
-#     drawing_mode="freedraw",
-#     key="canvas",
-# )
-#
-# if canvas_result.image_data is not None:
-#     if st.button("Распознать"):
-#         x = preprocess(canvas_result.image_data).to(device)
-#
-#         with torch.no_grad():
-#             logits = model(x)
-#             proba  = torch.softmax(logits, dim=1)[0]
-#             pred   = int(torch.argmax(proba).item())
-#
-#         st.subheader(f"Это цифра: {pred}")
-#         st.write(f"Уверенность: {proba[pred].item() * 100:.1f}%")
-#
-#         st.bar_chart({str(i): proba[i].item() for i in range(10)})
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FASTAPI — активно
-# запуск: uvicorn main:app --reload --port 8000
-# ══════════════════════════════════════════════════════════════════════════════
-
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException
-import uvicorn
-import io
-
+# ── Lifespan ───────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.model, app.state.device = load_model()
+    vocab = torch.load(
+        BASE_DIR / "vocab_Sentiment_IMDB_DatasetOf_50K_MovieReviews.pth",
+        map_location=device, weights_only=False,
+    )
+    vocab.set_default_index(vocab["<unk>"] if "<unk>" in vocab else 0)
+
+    model = SentimentModel(len(vocab)).to(device)
+    model.load_state_dict(torch.load(
+        BASE_DIR / "model_Sentiment_IMDB_DatasetOf_50K_MovieReviews.pth",
+        map_location=device,
+    ))
+    model.eval()
+
+    app.state.vocab = vocab
+    app.state.model = model
     yield
 
 
-app = FastAPI(title="MNIST Digit Classifier", lifespan=lifespan)
+app = FastAPI(title="IMDB Sentiment Classifier", lifespan=lifespan)
 
 
+# ── Schema ─────────────────────────────────────────────────────────────────────
+class TextIn(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("text не должен быть пустым")
+        return v
+
+
+# ── Utils ──────────────────────────────────────────────────────────────────────
+def preprocess(text: str, vocab) -> torch.Tensor:
+    ids = [vocab[t] for t in tokenizer(text)]
+    return torch.tensor([ids], dtype=torch.int64, device=device)
+
+
+# ── Endpoint ───────────────────────────────────────────────────────────────────
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File is not an image")
-
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Empty file")
-
-    try:
-        img = Image.open(io.BytesIO(raw)).convert("RGBA")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Could not read image")
-
-    x = preprocess(np.array(img)).to(app.state.device)
+def predict(item: TextIn):
+    x = preprocess(item.text, app.state.vocab)
 
     with torch.no_grad():
         logits = app.state.model(x)
-        proba  = torch.softmax(logits, dim=1)[0]
-        pred   = int(torch.argmax(proba).item())
+        proba  = F.softmax(logits, dim=1)[0].tolist()
+        label  = int(torch.argmax(logits, dim=1).item())
 
     return {
-        "digit":       pred,
-        "confidence":  round(proba[pred].item() * 100, 2),
-        "all_probabilities": {str(i): round(proba[i].item() * 100, 2) for i in range(10)},
+        "prediction":            label,
+        "sentiment":             "positive" if label == 1 else "negative",
+        "message":               "Отзыв позитивный" if label == 1 else "Отзыв негативный",
+        "probability_positive":  round(proba[1] * 100, 2),
+        "probability_negative":  round(proba[0] * 100, 2),
     }
 
 
