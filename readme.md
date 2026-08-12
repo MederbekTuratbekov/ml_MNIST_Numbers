@@ -1,149 +1,133 @@
-# Handwritten Digit Recognition System
+# MNIST Handwritten Digit Classifier
 
-> A CNN-powered web app that reads and classifies handwritten digits in real time —
-> automating data entry workflows and reducing manual processing costs.
+CNN-модель на PyTorch для распознавания рукописных цифр (0–9). Обучена на датасете MNIST, обёрнута в REST API (FastAPI) с альтернативным Streamlit-интерфейсом для локальной демонстрации.
 
-[![Python](https://img.shields.io/badge/Python-3.11-blue)]()
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)]()
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-orange)]()
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.x-red)]()
-[![Accuracy](https://img.shields.io/badge/Accuracy-~99%25-brightgreen)]()
-[![License: MIT](https://img.shields.io/badge/License-MIT-green)]()
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.1x-teal)]()
+[![Accuracy](https://img.shields.io/badge/Test%20Accuracy-98.32%25-brightgreen)]()
 
 ---
 
-## Business Problem
+## Результаты
 
-Organizations processing paper-based forms — banks, postal services, healthcare
-providers — spend significant resources manually keying handwritten numbers into
-digital systems. Automated digit recognition reduces this cost by up to 60–80%,
-eliminates transcription errors, and scales to millions of documents per day
-without additional headcount.
+Метрики из обучения (`MNIST_Numbers.ipynb`, 15 эпох):
+
+| Выборка | Accuracy |
+|---------|----------|
+| Train   | 99.34%   |
+| Test    | 98.32%   |
+
+- Функция потерь: `CrossEntropyLoss`
+- Оптимизатор: `Adam`, `lr=0.001`
+- Обучение: 15 эпох, `batch_size=32`, GPU (T4, Google Colab)
 
 ---
 
-## Demo
+## Архитектура модели
+```
+Conv2d(1 → 16, kernel=3, padding=1) → ReLU → MaxPool2d(2)
+Flatten → Linear(16×14×14 → 64) → ReLU → Dropout(0.25) → Linear(64 → 10)
+```
+Компактная CNN — один свёрточный блок вместо глубокой сети, чего достаточно для MNIST (28×28, один канал).
 
-Launch the app locally and upload any image of a handwritten digit:
+---
+
+## Датасет
+
+- **Источник:** MNIST (Yann LeCun / NYU) — [yann.lecun.com/exdb/mnist](http://yann.lecun.com/exdb/mnist)
+- **Размер:** 70,000 изображений (60k train / 10k test)
+- **Формат:** 28×28, grayscale, 10 классов (цифры 0–9)
+- Загружается напрямую через `torchvision.datasets.MNIST`, ручной подготовки не требует
+
+---
+
+## Инференс на реальных изображениях
+
+Модель обучена на чистом MNIST, но `main.py` содержит отдельный пайплайн предобработки (`preprocess()`) под фото/скан произвольного размера и формата:
+
+1. Конвертация в grayscale + инверсия (MNIST — белым по чёрному)
+2. Обрезка по bounding box цифры (убирает пустые поля)
+3. Паддинг до квадрата + отступ 20% (как в оригинальном датасете)
+4. Resize до 28×28 (LANCZOS)
+
+Это отдельный код, не пересекающийся с обучающим ноутбуком — нужен, потому что реальное фото с телефона или canvas-рисунок не соответствуют формату MNIST "из коробки".
+
+---
+
+## Как запустить
+
+Проект поддерживает два режима — активен FastAPI, Streamlit-версия закомментирована в этом же файле.
+
+### FastAPI (текущий режим)
+
+```bash
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+
+Документация API: `http://127.0.0.1:8000/docs`
+
+**Пример запроса:**
+```bash
+curl -X POST "http://127.0.0.1:8000/predict" -F "file=@digit.png"
+```
+
+**Ответ:**
+```json
+{
+  "digit": 7,
+  "confidence": 98.4,
+  "all_probabilities": {"0": 0.1, "1": 0.0, ..., "7": 98.4, ...}
+}
+```
+
+### Streamlit (альтернатива)
+
+Раскомментировать Streamlit-блок в `main.py` и закомментировать FastAPI-блок, затем:
 
 ```bash
 streamlit run main.py
 ```
 
-**App flow:**
-1. Upload a PNG/JPG image containing a single digit
-2. Click **"Распознать цифру"**
-3. Model returns the predicted digit instantly
-
-**Example output:**
-✅ Модель думает, что это: 7
+Интерфейс — canvas для рисования цифры мышью (`streamlit-drawable-canvas`) + вывод предсказания с confidence и bar-chart вероятностей по всем 10 классам.
 
 ---
 
-## Results
+## Стек
 
-| Metric    | Score  |
-|-----------|--------|
-| Accuracy  | ~99%   |
-| F1-score  | ~0.99  |
-| Precision | ~0.99  |
-| Recall    | ~0.99  |
-
-Best model: Custom CNN (Conv2d → ReLU → MaxPool → Flatten → Linear)
-Baseline (random classifier, 10 classes): Accuracy = 10%
-↑ +89% improvement vs baseline
+| Категория     | Инструменты                                  |
+|---------------|-----------------------------------------------|
+| Язык          | Python 3.10+                                   |
+| ML            | PyTorch, torchvision                           |
+| API           | FastAPI, Uvicorn                               |
+| UI (опция)    | Streamlit, streamlit-drawable-canvas           |
+| Обработка изображений | Pillow, NumPy                          |
+| Обучение      | Google Colab (GPU T4)                          |
 
 ---
 
-## Dataset
-
-- **Source:** MNIST (Yann LeCun / NYU) — [yann.lecun.com/exdb/mnist](http://yann.lecun.com/exdb/mnist)
-- **Size:** 70,000 grayscale images (60k train / 10k test)
-- **Features:** 28×28 single-channel images → 784 pixels per sample, 10 digit classes (0–9)
-- **Class balance:** Balanced — ~6,000 training samples per class
-
----
-
-## Approach
-
-1. **Data Loading** — Streamed via `torchvision.datasets.MNIST` with `DataLoader`,
-   `batch_size=32`
-2. **Preprocessing** — `ToTensor()` normalization; inference pipeline adds
-   `Grayscale()` + `Resize((28,28))` to handle arbitrary real-world uploads
-3. **Model Architecture** — Lightweight CNN:
-   `Conv2d(1→16, k=3)` + `ReLU` + `MaxPool2d(2)` →
-   `Flatten` + `Linear(3136→64)` + `ReLU` + `Linear(64→10)`
-4. **Training** — CrossEntropyLoss + Adam optimizer on 60k images
-5. **Evaluation** — Tested on 10k held-out images; argmax over logits for prediction
-6. **Deployment** — Streamlit UI with file uploader; model loads once at startup,
-   runs inference on each upload
-
----
-
-## Key Challenges & Solutions
-
-**Real-world image format mismatch**
-User uploads can be RGB, RGBA, or any resolution, but the model expects
-28×28 single-channel input → added `Grayscale(num_output_channels=1)` +
-`Resize((28,28))` to the inference transform → zero shape-mismatch errors
-across all tested image formats.
-
-**Model size vs. accuracy trade-off**
-A larger 64-filter architecture (as in the Fashion project) would add unnecessary
-latency for single-digit classification → reduced to 16 filters in the conv layer,
-cutting parameter count by 4× while retaining ~99% accuracy on this task.
-
-**Silent inference failures in Streamlit**
-Unhandled exceptions during model forward pass caused a blank UI with no user
-feedback → wrapped the entire inference block in `try/except` with
-`st.error(f'Ошибка: {str(e)}')` → all errors now surface visibly in the UI,
-reducing debugging time to under 30 seconds per issue.
-
----
-
-## Tech Stack
-
-| Category   | Tools                          |
-|------------|--------------------------------|
-| Language   | Python 3.11                    |
-| ML         | PyTorch, torchvision           |
-| UI / Demo  | Streamlit                      |
-| Data       | Pillow, Matplotlib, Seaborn    |
-| Deploy     | Streamlit (local / cloud)      |
-
----
-
-## How to Run
-
-```bash
-# 1. Clone and install
-git clone https://github.com/your-username/digit-recognition
-cd digit-recognition
-pip install torch torchvision streamlit pillow matplotlib seaborn
+## Структура проекта
 ```
-
-```bash
-# 2. Train the model (saves MNIST_Numbers.pth)
-python train.py
-```
-
-```bash
-# 3. Launch the web app
-streamlit run main.py
+ml_MNIST_Numbers/
+├── .gitignore
+├── readme.md
+├── requirements.txt
+└── MNIST_Numbers/
+    ├── MNIST_Numbers.ipynb
+    ├── model_CheckImage_MNIST_Numbers.pth
+    ├── main.py
+    ├── numbers test/
+    │   ├── 0.png
+    │   ├── 1.png
+    │   ├── 2.png
+    │   ├── 3.png
+    │   ├── 4.png
+    │   ├── 5.png
+    │   ├── 6.png
+    │   └── 7.png
+    ├── test.png
+    └── test2.png
 ```
 
 ---
-
-## Business Impact
-
-- ↓ ~70% reduction in manual data entry time for form-processing workflows (estimated)
-- ↑ ~99% digit recognition accuracy vs ~85% average human transcription accuracy
-  under time pressure (estimated)
-- ↓ ~60% decrease in transcription errors compared to manual keying (estimated)
-- ↑ Scales to thousands of images per minute on a single CPU instance
-- ↑ Drop-in integration with document scanning pipelines via simple image upload
-
----
-
-[//]: # (## Author)
-
-[//]: # (Your Name — [LinkedIn]&#40;#&#41; | [GitHub]&#40;#&#41;)
